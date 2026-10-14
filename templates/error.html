@@ -1,0 +1,2 @@
+{% extends "base.html" %}
+{% block content %}<div class="alert alert-danger"><h2>Операция не выполнена</h2><p>{{ message }}</p></div><a href="{{ url_for('documents_list') }}">К документам</a>{% endblock %}
