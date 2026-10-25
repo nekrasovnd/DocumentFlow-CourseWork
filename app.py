@@ -3,10 +3,12 @@ DocumentFlow — система документооборота с электр
 Основной файл приложения (Flask).
 """
 
+import io
 import os
 import sys
 import secrets
 import sqlite3
+import zipfile
 import binascii
 from pathlib import Path
 from uuid import uuid4
@@ -16,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from flask import (
     Flask, render_template, request, redirect, url_for,
-    session, flash, send_from_directory, abort
+    session, flash, send_from_directory, send_file, abort
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -105,6 +107,55 @@ def read_document(doc):
         return path.read_bytes()
     except OSError:
         abort(404, description="Файл документа отсутствует или недоступен.")
+
+
+def as_bytes(value):
+    return value.encode("utf-8") if isinstance(value, str) else value
+
+
+def signed_document(doc_id):
+    """Документ владельца, его подпись и данные подписавшего после проверки подписи."""
+    doc = owned_document(doc_id)
+    sig_info = db.get_signature_for_document(doc_id)
+    if not sig_info:
+        abort(404, description="Документ не подписан.")
+    file_data = read_document(doc)
+    signer = db.get_user_by_id(sig_info["user_id"])
+    try:
+        public_key = sig.load_public_key(as_bytes(signer["public_key_pem"]))
+        signature = sig.decode_signature_b64(sig_info["signature_b64"])
+        is_valid = sig.verify_signature(file_data, signature, public_key)
+    except (ValueError, TypeError, binascii.Error):
+        is_valid = False
+    if not is_valid:
+        abort(409, description="Подпись не соответствует файлу. Скачивание подписи отменено.")
+    return doc, sig_info, signer, file_data, signature
+
+
+def signature_info_text(doc, sig_info, signer, file_data, signature):
+    """Текстовое описание подписи для архива с документом."""
+    name = doc["filename"]
+    cert_pem = as_bytes(signer["certificate_pem"])
+    return "\r\n".join([
+        "Сведения об электронной подписи (DocumentFlow)",
+        "",
+        f"Документ: {name}",
+        f"SHA-256 документа: {db.compute_checksum(file_data)}",
+        f"Подписал: {sig_info['signer_name']}",
+        f"Дата подписания (UTC): {sig_info['signed_at']}",
+        f"Отпечаток SHA-256 сертификата: {sig.certificate_fingerprint(cert_pem)}",
+        "",
+        "Алгоритм: RSASSA-PSS (RFC 8017), ключ RSA-2048, хэш-функция SHA-256,",
+        "функция генерации маски MGF1 с SHA-256.",
+        f"Файл {name}.sig содержит открепленную подпись длиной {len(signature)} байт",
+        "без контейнера CMS. Сертификат подписанта самоподписанный и не выдан",
+        "аккредитованным удостоверяющим центром.",
+        "",
+        "Проверка с помощью OpenSSL 3:",
+        f'openssl dgst -sha256 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:auto '
+        f'-verify public_key.pem -signature "{name}.sig" "{name}"',
+        "",
+    ]).encode("utf-8-sig")
 
 
 def allowed_file(filename):
@@ -254,6 +305,36 @@ def download_document(doc_id):
         Path(doc["filepath"]).name,
         as_attachment=True, download_name=doc["filename"]
     )
+
+
+@app.route("/download/<int:doc_id>/signature")
+@login_required
+def download_signature(doc_id):
+    doc, _, _, _, signature = signed_document(doc_id)
+    return send_file(io.BytesIO(signature), mimetype="application/octet-stream",
+                     as_attachment=True, download_name=doc["filename"] + ".sig")
+
+
+@app.route("/download/<int:doc_id>/package")
+@login_required
+def download_package(doc_id):
+    doc, sig_info, signer, file_data, signature = signed_document(doc_id)
+    name = doc["filename"]
+    # Имя файла сведений не должно совпасть с именем самого документа.
+    info_name = "signature_info.txt" if name != "signature_info.txt" else "signature_info_1.txt"
+    info = signature_info_text(doc, sig_info, signer, file_data, signature)
+    cert_pem = as_bytes(signer["certificate_pem"])
+    public_pem = as_bytes(signer["public_key_pem"])
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(name, file_data)
+        archive.writestr(name + ".sig", signature)
+        archive.writestr("certificate.pem", cert_pem)
+        archive.writestr("public_key.pem", public_pem)
+        archive.writestr(info_name, info)
+    buffer.seek(0)
+    return send_file(buffer, mimetype="application/zip", as_attachment=True,
+                     download_name=name.rsplit(".", 1)[0] + "_signed.zip")
 
 
 # ---- Подписание и верификация ----

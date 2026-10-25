@@ -48,6 +48,11 @@
                             и не был изменён после подписания.</p>
                             <p><strong>Алгоритм:</strong> RSA-PSS, SHA-256</p>
                         </div>
+                        <p>
+                            <a href="{{ url_for('download_document', doc_id=doc.id) }}" class="btn btn-outline-primary">Документ</a>
+                            <a href="{{ url_for('download_signature', doc_id=doc.id) }}" class="btn btn-outline-primary">Подпись (.sig)</a>
+                            <a href="{{ url_for('download_package', doc_id=doc.id) }}" class="btn btn-outline-primary">Архив: документ, подпись и сертификат (.zip)</a>
+                        </p>
                     {% else %}
                         <div class="alert alert-danger">
                             <h4>Проверка подписи не пройдена</h4>

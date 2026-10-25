@@ -35,6 +35,30 @@ result_tampered = sig.verify_signature(data + b"X", signature, pub_key)
 assert result_tampered is False, "Verification should be False for tampered data"
 print(f"  Верификация (изменённый документ): {result_tampered}")
 
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import padding
+legacy_signature = key.sign(data, padding.PSS(mgf=padding.MGF1(hashes.SHA256()),
+                                              salt_length=padding.PSS.MAX_LENGTH), hashes.SHA256())
+assert sig.verify_signature(data, legacy_signature, pub_key) is True
+print("  Верификация подписи первой версии (максимальная соль): True")
+
+# Восстановление EM = s^e mod n и разбор EMSA-PSS (RFC 8017, п. 9.1.2)
+import hashlib
+numbers = pub_key.public_numbers()
+em = pow(int.from_bytes(signature, "big"), numbers.e, numbers.n).to_bytes(256, "big")
+masked_db, h = em[:-33], em[-33:-1]
+mask, counter = b"", 0
+while len(mask) < len(masked_db):
+    mask += hashlib.sha256(h + counter.to_bytes(4, "big")).digest()
+    counter += 1
+db_block = bytes(a ^ b for a, b in zip(masked_db, mask))
+db_block = bytes([db_block[0] & 0x7F]) + db_block[1:]
+ps_length = db_block.index(1)
+salt = db_block[ps_length + 1:]
+h_check = hashlib.sha256(b"\0" * 8 + hashlib.sha256(data).digest() + salt).digest()
+assert em[-1] == 0xBC and ps_length == 190 and len(salt) == 32 and h_check == h
+print(f"  EMSA-PSS: PS={ps_length} байт, соль={len(salt)} байта (sLen = hLen), H' = H")
+
 sig_b64 = sig.encode_signature_b64(signature)
 sig_decoded = sig.decode_signature_b64(sig_b64)
 assert sig_decoded == signature

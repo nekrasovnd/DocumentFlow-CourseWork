@@ -51,16 +51,23 @@ def load_public_key(pem_data):
     return serialization.load_pem_public_key(pem_data)
 
 
+def certificate_fingerprint(cert_pem) -> str:
+    """Отпечаток SHA-256 сертификата в шестнадцатеричном виде."""
+    cert = x509.load_pem_x509_certificate(cert_pem)
+    return cert.fingerprint(hashes.SHA256()).hex()
+
+
 def sign_document(file_data: bytes, private_key) -> bytes:
     """
     Подписание документа.
     Используется схема RSA-PSS с хэш-функцией SHA-256.
+    Длина соли равна длине хэша (32 байта), как требует FIPS 186-5.
     """
     signature = private_key.sign(
         file_data,
         padding.PSS(
             mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH
+            salt_length=padding.PSS.DIGEST_LENGTH
         ),
         hashes.SHA256()
     )
@@ -72,19 +79,23 @@ def verify_signature(file_data: bytes, signature: bytes, public_key) -> bool:
     Верификация электронной подписи.
     Возвращает True, если подпись корректна, иначе False.
     """
-    try:
-        public_key.verify(
-            signature,
-            file_data,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            hashes.SHA256()
-        )
-        return True
-    except InvalidSignature:
-        return False
+    # Вторая длина соли нужна для подписей, созданных первой версией
+    # приложения с максимальной длиной соли.
+    for salt_length in (padding.PSS.DIGEST_LENGTH, padding.PSS.MAX_LENGTH):
+        try:
+            public_key.verify(
+                signature,
+                file_data,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=salt_length
+                ),
+                hashes.SHA256()
+            )
+            return True
+        except InvalidSignature:
+            continue
+    return False
 
 
 def generate_certificate(private_key, username: str):

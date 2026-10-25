@@ -45,6 +45,8 @@
                         </form>
                         {% endif %}
                         {% if doc.is_signed %}
+                        <a href="{{ url_for('download_signature', doc_id=doc.id) }}" class="btn btn-outline-primary">Подпись (.sig)</a>
+                        <a href="{{ url_for('download_package', doc_id=doc.id) }}" class="btn btn-outline-primary">Архив (.zip)</a>
                         <a href="{{ url_for('verify_doc', doc_id=doc.id) }}" class="btn btn-outline-info">Проверить</a>
                         {% endif %}
                     </div>
